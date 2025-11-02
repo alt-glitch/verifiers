@@ -13,7 +13,7 @@ Verifiers allows defining arbitrary interaction patterns between models and envi
 
 ```
 Environment (orchestration layer)
-    ├── Defines interaction protocol (what to observe respond, how to respond, when to terminate)
+    ├── Defines interaction protocol (what to observe, how to respond, when to terminate)
     ├── Manages conversation state
     ├── Integrates tools and external resources
     └── Evaluates performance via Rubrics
@@ -41,14 +41,15 @@ from typing import Tuple
 class MyProtocol(vf.MultiTurnEnv):
     async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
         """Define how environment responds to model"""
-        # Custom logic for your protocol
         response = [{"role": "user", "content": "Environment feedback"}]
-        # Update state
         state["turn"] = state.get("turn", 0) + 1
         return response, state
     
     async def is_completed(self, messages: Messages, state: State) -> bool:
         """Define when interaction ends"""
+        # Always defer to the base implementation so turn limits are respected
+        if await super().is_completed(messages, state):
+            return True
         return state.get("task_complete", False)
 ```
 
@@ -58,26 +59,24 @@ Leverages models' built-in tool calling for agentic workflows:
 
 ```python
 env = vf.ToolEnv(
-    tools=[search, calculate, execute_code],  # Python functions
+    tools=[search, calculate, execute_code],  # Stateless Python functions
     max_turns=10,
-    dataset=dataset, # HuggingFace dataset
+    dataset=dataset,
     rubric=rubric
 )
 ```
 
-Tools may be sync or async, and are automatically converted to JSON schemas and integrated with the model's native function calling format.
+Tools may be sync or async. Keep them pure: the environment ends when the assistant responds without tool calls. If you must inject rollout-specific context, upgrade to `StatefulToolEnv` and override `update_tool_args` instead of relying on global state.
 
 ### SingleTurnEnv: Simple Evaluation
 
 For straightforward Q&A tasks without interaction:
 
-```python
 env = vf.SingleTurnEnv(
     dataset=dataset,
-    system_prompt="Answer the question."
+    system_prompt="Answer the question.",
     rubric=rubric,
 )
-```
 
 ## Key Components
 
@@ -112,9 +111,9 @@ Package your interaction protocol as a reusable module:
 ```
 my_environment/
 ├── outputs/                # Evaluation logs
-├── my_environment.py      # Defines load_environment() -> vf.Environment
-├── pyproject.toml        # Dependencies
-└── README.md            # Documentation
+├── my_environment.py       # Defines load_environment() -> vf.Environment
+├── pyproject.toml          # Dependencies
+└── README.md               # Documentation
 ```
 
 This enables:
@@ -129,14 +128,16 @@ Environments maintain state throughout interactions:
 
 ```python
 state = {
-    # automatically managed  
+    # automatically managed
     "prompt": prompt, # inputs from dataset
     "completion": [], # trajectory so far
     "answer": answer, # golden answer (str)
     "task": task, # optional environment ID column
     "info": info, # evaluation metadata (dict) -- can use answer/info/both
     "responses": [], # Raw API responses from OpenAI client
+    "example_id": example_id, # Source dataset row identifier
     "turn": 0,
+    "timing": {"generation_ms": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
     # custom user-managed state
     "lives_remaining": 2,
     "inventory": {"potion": 1, "power-up": 2}
@@ -167,8 +168,12 @@ Build complex evaluation from simple parts:
 Works with any OpenAI-compatible API:
 ```python
 # OpenAI, vLLM, or any compatible endpoint
-client = OpenAI(base_url="http://localhost:8000/v1") # or AsyncOpenAI
-results = env.evaluate(client, model="llama-3.1-8b")
+from openai import AsyncOpenAI
+import asyncio
+
+async_client = AsyncOpenAI(base_url="http://localhost:8000/v1")
+results = asyncio.run(env.evaluate(client=async_client, model="llama-3.1-8b"))
+# Prefer env.evaluate_sync(OpenAI(...), ...) if you need a blocking helper
 ```
 
 ## Data Flow
@@ -188,22 +193,30 @@ results = env.evaluate(client, model="llama-3.1-8b")
 
 - **Running evaluation**:
   ```python
-  results = env.evaluate(
-      client, model,
-      num_examples=100,
-      rollouts_per_example=2,
-      max_concurrent=32,
+  import asyncio
+  from openai import AsyncOpenAI
+
+  async_client = AsyncOpenAI()
+  results = asyncio.run(
+      env.evaluate(
+          client=async_client,
+          model=model,
+          num_examples=100,
+          rollouts_per_example=2,
+          max_concurrent=32,
+      )
   )
   ```
   - `rollouts_per_example > 1` repeats dataset entries internally.
   - `max_concurrent` throttles concurrent rollouts.
+  - `save_every` (when > 0) checkpoints intermediate progress during interleaved rollouts (set `interleave_scoring=True`).
 
 - **Scoring**:
   - Each reward function returns a float. Weights applied inside `Rubric` combine them into `results.reward`.
   - All individual scores are logged under `results.metrics` keyed by function name (even if weight is 0.0).
 
 - **Outputs** (`GenerateOutputs`):
-  - `prompt`, `completion`, `answer`, `state`, `info`, `task`, `reward`, `metrics: dict[str, list[float]]`.
+  - `prompt`, `completion`, `answer`, `state`, `info`, `task`, `id`, `reward`, `metrics: dict[str, list[float]]`, plus a `metadata` block summarizing the run.
 
 - **Message types**:
   - `message_type="chat"` (default) expects chat messages; `"completion"` expects raw text continuation. Choose based on your task (e.g., continuation quality uses completion).
@@ -236,22 +249,17 @@ vf-tui
 
 You can also evaluate models in your environments programmatically:
 ```python
-results = env.evaluate(client, model, num_examples=100)
+import asyncio
+from openai import AsyncOpenAI
+
+async_client = AsyncOpenAI()
+results = asyncio.run(env.evaluate(client=async_client, model=model, num_examples=100))
 ```
+`env.evaluate` is async—wrap it with `asyncio.run(...)` (as above) or call `env.evaluate_sync` when you must stay in synchronous code.
 
 ### For Training
 
-```python
-# Environments provide rollout-level interfaces for RL
-completion, state = await env.rollout(
-    client, model, prompt, answer
-)
-rewards = await env.rubric.score_rollout(
-    prompt, completion, answer, state
-)
-# Or, process rollouts in batches for high throughput and configurable coordination
-outputs = await env.a_generate(inputs, client, model, sampling_args) # `generate` for sync
-```
+Run RL training via `vf-rl` using a single TOML to configure model, environment, inference, and trainer. See the training guide for a minimal example.
 
 ### For Custom Workflows
 

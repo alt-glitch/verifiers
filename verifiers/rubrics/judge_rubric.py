@@ -1,7 +1,6 @@
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
-from openai import APIError, RateLimitError, APITimeoutError
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
@@ -34,7 +33,7 @@ class JudgeRubric(Rubric):
         self,
         parser: Parser | None = None,
         parallelize_scoring: bool = False,
-        judge_client: OpenAI | AsyncOpenAI | None = None,
+        judge_client: AsyncOpenAI | None = None,
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
@@ -92,7 +91,7 @@ class JudgeRubric(Rubric):
         ):
             judge_args.pop("max_completion_tokens")
         judge_args = {k: v for k, v in judge_args.items() if v is not None}
-        
+
         try:
             judge_response = await maybe_await(
                 self.judge_client.chat.completions.create,
@@ -137,7 +136,7 @@ class JudgeRubric(Rubric):
                 f"Unexpected error when calling judge model '{self.judge_model}'. "
                 f"Error: {str(e)}"
             ) from e
-            
+
         if not isinstance(cached, dict):
             cached = {}
         cached[judge_prompt] = judge_response

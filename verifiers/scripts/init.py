@@ -66,7 +66,7 @@ name = "{{env_id}}"
 description = "Your environment description here"
 tags = ["placeholder-tag", "train", "eval"]
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "verifiers>={vf.__version__}",
 ]
@@ -74,6 +74,13 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["{{env_file}}.py", "pyproject.toml"] 
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
 """
 
 INIT_TEMPLATE = """\

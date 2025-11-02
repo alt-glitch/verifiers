@@ -77,6 +77,50 @@ dependencies = [
     "verifiers",
     "sympy",  # For symbolic math
 ]
+
+[tool.hatch.build]
+include = ["my_math_env.py", "pyproject.toml"]
+```
+
+### Default Evaluation Configuration
+
+You can specify default evaluation parameters in your `pyproject.toml` to customize the default behavior when users run `vf-eval` without explicit arguments:
+
+```toml
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 5
+```
+
+These defaults are automatically read from the installed package's `pyproject.toml` and used when:
+- Users don't provide `-n` / `--num-examples` or `-r` / `--rollouts-per-example` flags
+- The package is installed and `pyproject.toml` is included in the package distribution
+
+**Important**: Ensure `pyproject.toml` is included in your package by adding it to the `[tool.hatch.build]` section:
+
+```toml
+[tool.hatch.build]
+include = ["my_math_env.py", "pyproject.toml"]
+```
+
+CLI arguments always take precedence over these defaults—if a user explicitly passes `-n 10`, that value will be used regardless of what's in `pyproject.toml`.
+
+Third-party libraries can also access these defaults programmatically:
+
+```python
+import importlib.resources
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib
+
+package_ref = importlib.resources.files("my_math_env")
+pyproject_file = package_ref / "pyproject.toml"
+with pyproject_file.open("rb") as f:
+    pyproject_data = tomllib.load(f)
+    
+eval_config = pyproject_data.get("tool", {}).get("verifiers", {}).get("eval", {})
+num_examples = eval_config.get("num_examples", 5)  # fallback to 5 if not specified
 ```
 
 ## Development Workflow
@@ -110,14 +154,18 @@ env = vf.load_environment("my-math-env")
 
 # Test with a model
 client = OpenAI()
-results = env.evaluate(
-    client, "gpt-4.1-mini",
+results = env.evaluate_sync(
+    client=client,
+    model="gpt-4.1-mini",
     num_examples=5,
     rollouts_per_example=2,
     max_concurrent=32,
+    save_every=10,
 )
 print(results)
 ```
+
+Prefer `AsyncOpenAI` + `await env.evaluate(...)` for fully async workflows; the sync helper is ideal when integrating into existing blocking scripts. Intermediate saving via `save_every` requires the default interleaved scoring pipeline.
 
 ### 3. Iterate on Design
 
@@ -126,6 +174,69 @@ Common iterations:
 - Refine parser logic for edge cases
 - Add new reward functions to the rubric
 - Configure dataset filtering or sampling
+
+## Using Prime CLI and the Environments Hub
+
+Prime Intellect provides a hosted [Environments Hub](https://docs.primeintellect.ai/tutorials-environments/environments) for discovering, installing, and sharing verifiers packages. The [`prime` CLI](https://github.com/PrimeIntellect-ai/prime-cli) wraps the same templates and packaging helpers exposed here, so you can publish environments once and re-use them from local machines, CI pipelines, or Prime pods.
+
+### Install and authenticate
+
+```bash
+uv tool install prime
+prime login  # stores an API token used for hub operations
+```
+
+If you collaborate through a team account, run `prime config use <team>` (or set `--team` flags in later commands) so pushes end up in the shared namespace.
+
+### Bootstrap templates from the CLI
+
+`prime env init <name>` uses the same generator as `vf-init`, but it pre-populates the directory inside `./environments/` and prints the follow-up commands for publishing. Use this when you're starting a project that you plan to ship through the Hub:
+
+```bash
+prime env init vf-math-demo
+cd environments/vf_math_demo
+# edit vf_math_demo.py, pyproject.toml, README.md, etc.
+```
+
+For existing environments you created earlier with `vf-init`, no migration is required—`prime env push` operates on any directory that contains a valid `pyproject.toml` and `load_environment` implementation.
+
+### Publish versions to the Hub
+
+Once your package is ready, build and upload it with:
+
+```bash
+prime env push --visibility PUBLIC  # or PRIVATE for internal distributions
+```
+
+The command builds a wheel (using `uv build` when available), computes a deterministic content hash, and uploads the artifact. Add `--auto-bump` to increment the patch version before publishing, or pass `--team <slug>` to publish under a team namespace. Successful pushes print a dashboard link plus a one-line install command.
+
+You can manage published artifacts directly from the CLI:
+
+- `prime env version list owner/name` shows version history and hashes.
+- `prime env version delete owner/name <content_hash>` removes a specific build.
+- `prime env delete owner/name` deletes the environment entirely.
+
+### Discover, install, and inspect environments
+
+The CLI also helps consumers find and install verifiers:
+
+```bash
+prime env list --owner my-team           # browse available environments
+prime env info my-team/vf-math-demo      # show install commands and metadata
+prime env install my-team/vf-math-demo   # install latest release with uv
+prime env install owner/env@0.1.2 --with pip  # pin version & use pip instead
+prime env pull owner/env@latest --target ./tmp-env  # download source tarball
+```
+
+`prime env install` prefers installing from the Hub's simple index (so upgrades work with `uv add`/`pip install` too), and falls back to direct wheel URLs for older releases. After installation the package becomes available to `verifiers.load_environment` just like any other module:
+
+```python
+from verifiers import load_environment
+
+env = load_environment("vf-math-demo")
+```
+
+When you run workloads on Prime pods provisioned via `prime pods create`, include these install commands in your startup scripts so the same environment definitions are available remotely.
 
 ## Working with Rubrics
 
@@ -227,29 +338,23 @@ class MyGameEnv(vf.MultiTurnEnv):
 
     async def env_response(self, messages: Messages, state: State) -> Tuple[Messages, State]:
         """Define how the environment responds."""
-        # Get the last message from the assistant
         last_msg = messages[-1]
-        if last_msg["role"] == "assistant":
-            player_action = last_msg["content"]
-        else:
-            return [], state  # No response if not assistant message
-        
-        # Check game state
+        if last_msg["role"] != "assistant":
+            return [], state
+
+        player_action = last_msg["content"]
         if self.is_game_over(state):
-            response = [{"role": "user", "content": "Game over!"}]
             state["done"] = True
-            return response, state
-        
-        # Update game state
+            return [{"role": "user", "content": "Game over!"}], state
+
         state = self.update_state(state, player_action)
         feedback = self.get_game_feedback(state)
-        
-        # Return list of ChatMessage dicts
-        response = [{"role": "user", "content": feedback}]
-        return response, state
+        return [{"role": "user", "content": feedback}], state
 
-def load_environment(**kwargs):
-    return MyGameEnv(dataset=dataset, **kwargs)
+    async def is_completed(self, messages: Messages, state: State) -> bool:
+        if await super().is_completed(messages, state):
+            return True
+        return state.get("solved", False) or state.get("failed", False)
 ```
 
 ### ToolEnv
@@ -270,6 +375,29 @@ def load_environment(**kwargs):
         **kwargs
     )
 ```
+
+Tool functions should be deterministic and free of hidden side effects. A rollout ends when the model produces an assistant turn with no tool calls, so store per-session context in `state` rather than globals. Use `StatefulToolEnv` if you need to inject extra arguments or secrets into each tool invocation.
+
+#### StatefulToolEnv
+
+For stateful workflows, extend `vf.StatefulToolEnv`:
+
+```python
+class SandboxAwareEnv(vf.StatefulToolEnv):
+    async def setup_state(self, state: State, **kwargs) -> State:
+        state = await super().setup_state(state, **kwargs)
+        state["sandbox_id"] = await provision_sandbox_async()
+        return state
+
+    def update_tool_args(self, tool_name: str, tool_args: dict, messages: Messages, state: State, **kwargs) -> dict:
+        return {**tool_args, "sandbox_id": state["sandbox_id"]}
+```
+
+Keep heavy provisioning asynchronous and defer expensive await calls until a tool actually needs the resource. Remove sensitive args from the tool schema via `add_tool(..., args_to_skip=[...])` so the model never sees them.
+
+#### SandboxEnv & PythonEnv
+
+`vf.SandboxEnv` packages the pattern above for Prime sandboxes: it kicks off container startup in `setup_state` and injects handles into tool calls once ready. `vf.PythonEnv` is the canonical example—review it when building similar sandboxes or remote runtimes.
 
 ## Advanced Patterns
 

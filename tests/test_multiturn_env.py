@@ -3,7 +3,7 @@
 import pytest
 from datasets import Dataset
 
-from verifiers import MultiTurnEnv, Parser, Rubric
+from verifiers import Messages, MultiTurnEnv, Parser, Rubric, State
 
 
 class TestMultiTurnEnv:
@@ -78,8 +78,7 @@ class TestMultiTurnEnv:
         # Check state structure
         assert state["answer"] == "target_answer"
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert "responses" in state
         assert len(state["responses"]) == 3  # Three assistant responses
 
@@ -107,6 +106,56 @@ class TestMultiTurnEnv:
         assert len(state["responses"]) == 2  # Two assistant responses
 
     @pytest.mark.asyncio
+    async def test_override_is_completed_respects_max_turns(
+        self, mock_openai_client, sample_chat_dataset
+    ):
+        """Ensure custom is_completed implementations still honor max_turns."""
+
+        class MaxTurnsAwareEnv(MultiTurnEnv):
+            def __init__(self, **kwargs):
+                super().__init__(max_turns=2, **kwargs)
+
+            async def is_completed(self, messages, state, **kwargs):  # type: ignore[override]
+                if await super().is_completed(messages, state, **kwargs):
+                    return True
+                return state.get("done", False)
+
+            def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                state["env_calls"] = state.get("env_calls", 0) + 1
+                return [
+                    {
+                        "role": "user",
+                        "content": "Environment follow-up",
+                    }
+                ], state
+
+        env = MaxTurnsAwareEnv(
+            client=mock_openai_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        mock_openai_client.set_default_responses(chat_response="Still thinking")
+
+        prompt: Messages = [{"role": "user", "content": "Start"}]
+        completion, state = await env.rollout(
+            client=mock_openai_client,
+            model="test-model",
+            prompt=prompt,
+            answer="target",
+        )
+
+        assert state["turn"] == 2
+        assert state.get("env_calls", 0) == 1
+        assert len(state["responses"]) == 2
+        assert isinstance(completion, list)
+        assert "content" in completion[-1]
+        assert completion[-1]["role"] == "assistant"
+        assert completion[-1]["content"] == "Still thinking"
+
+    @pytest.mark.asyncio
     async def test_state_initialization(self, mock_multiturn_env):
         """Test that state is properly initialized with all required fields."""
         mock_multiturn_env.client.add_chat_response(
@@ -121,15 +170,16 @@ class TestMultiTurnEnv:
             answer="test_answer",
             task="test_task",
             info={"extra": "data"},
+            example_id=0,
         )
 
         # Check all state fields are initialized
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert state["answer"] == "test_answer"
         assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
+        assert state["example_id"] == 0
         assert "responses" in state
         assert isinstance(state["responses"], list)
 
@@ -238,10 +288,14 @@ class TestMultiTurnEnv:
             def __init__(self, **kwargs):
                 super().__init__(message_type="completion", **kwargs)
 
-            def is_completed(self, messages, state, **kwargs):
+            async def is_completed(
+                self, messages: Messages, state: State, **kwargs
+            ) -> bool:
                 return "DONE" in messages
 
-            def env_response(self, messages, state, **kwargs):
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> tuple[Messages, State]:
                 return " Continue.", state
 
         completion_dataset = Dataset.from_dict(
@@ -323,7 +377,9 @@ class TestMultiTurnEnv:
         """Test completion detection works before env_response is called."""
 
         class ImmediateCompletionEnv(MultiTurnEnv):
-            def is_completed(self, messages, state, **kwargs):
+            async def is_completed(
+                self, messages: Messages, state: State, **kwargs
+            ) -> bool:
                 # Complete if we have any assistant message
                 return (
                     any(msg.get("role") == "assistant" for msg in messages)
@@ -331,9 +387,11 @@ class TestMultiTurnEnv:
                     else False
                 )
 
-            def env_response(self, messages, state, **kwargs):  # type: ignore
+            async def env_response(
+                self, messages: Messages, state: State, **kwargs
+            ) -> tuple[Messages, State]:  # type: ignore
                 # This should never be called due to immediate completion
-                return {"role": "user", "content": "Should not appear"}, state
+                return [{"role": "user", "content": "Should not appear"}], state
 
         env = ImmediateCompletionEnv(
             client=mock_openai_client,

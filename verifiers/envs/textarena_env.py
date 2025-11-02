@@ -2,17 +2,21 @@ import random
 from copy import deepcopy
 from typing import Any, Callable
 
+from datasets import Dataset
+
+from verifiers import MultiTurnEnv, Rubric, XMLParser
+from verifiers.types import Messages, State
+
 try:
     import nltk  # type: ignore
 except ImportError:
     print("nltk is not installed. Please install it with `uv pip install nltk`.")
     exit(1)
 
-from datasets import Dataset
 
 # monkey-patch nltk.download to always be quiet before importing textarena
 _original_nltk_download = nltk.download
-nltk.download = lambda *args, **kwargs: _original_nltk_download(
+nltk.download = lambda *args, **kwargs: _original_nltk_download(  # type: ignore[invalid-assignment]
     *args, **{**kwargs, "quiet": True}
 )
 
@@ -23,14 +27,6 @@ except ImportError:
         "textarena is not installed. Please install it with `uv pip install textarena`."
     )
     exit(1)
-
-from verifiers.envs.multiturn_env import MultiTurnEnv  # noqa: E402
-from verifiers.parsers.xml_parser import XMLParser  # noqa: E402
-from verifiers.rubrics.rubric import Rubric  # noqa: E402
-from verifiers.types import (  # noqa: E402
-    Messages,
-    State,
-)
 
 
 class TextArenaEnv(MultiTurnEnv):
@@ -77,11 +73,11 @@ class TextArenaEnv(MultiTurnEnv):
     async def is_completed(
         self, messages: Messages, state: State, **kwargs: Any
     ) -> bool:
-        if "is_finished" in state and state["is_finished"]:
+        completed = await super().is_completed(messages, state, **kwargs)
+        if "is_completed" in state and state["is_completed"]:
             state.pop("ta_env")
-            return state["is_finished"]
-        self.parser
-        return False
+            return state["is_completed"]
+        return False or completed
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs: Any
@@ -98,8 +94,8 @@ class TextArenaEnv(MultiTurnEnv):
         assert isinstance(messages[-1], dict)
         guess = self.parser.parse_answer(messages)
         # step env
-        is_finished, _ = ta_env.step(str(guess))
-        state["is_finished"] = is_finished
+        is_completed, _ = ta_env.step(str(guess))
+        state["is_completed"] = is_completed
         _, observation = ta_env.get_observation()
         feedback = self.feedback_fn(observation)
         return [{"role": "user", "content": str(feedback)}], state

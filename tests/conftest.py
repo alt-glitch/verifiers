@@ -6,11 +6,16 @@ import pytest
 from datasets import Dataset
 
 from verifiers import (
+    MaybeThinkParser,
+    Messages,
     MultiTurnEnv,
     Parser,
     Rubric,
     SingleTurnEnv,
+    State,
+    StatefulToolEnv,
     ThinkParser,
+    ToolEnv,
     XMLParser,
 )
 
@@ -31,6 +36,12 @@ def xml_parser():
 def xml_parser_with_alternatives():
     """Return an XMLParser instance with alternative field names."""
     return XMLParser(fields=["reasoning", ("code", "answer")], answer_field="answer")
+
+
+@pytest.fixture
+def maybe_think_parser():
+    """Return a MaybeThinkParser instance."""
+    return MaybeThinkParser()
 
 
 @pytest.fixture
@@ -208,6 +219,7 @@ def sample_chat_dataset():
                 [{"role": "user", "content": "What is the capital of France?"}],
             ],
             "answer": ["4", "Paris"],
+            "example_id": [0, 1],
         }
     )
 
@@ -257,22 +269,28 @@ class SimpleMultiTurnEnv(MultiTurnEnv):
         )
         self.env_response_count = 0
 
-    def is_completed(self, messages, state, **kwargs):
+    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """Simple completion logic for testing."""
+        if await self.max_turns_reached(state):
+            return True
         if self.completion_condition == "answer":
             # Complete when assistant says "DONE"
+            assert isinstance(messages, list)
             if messages and messages[-1].get("role") == "assistant":
-                return "DONE" in messages[-1].get("content", "")
+                assert isinstance(messages, list)
+                return "DONE" in str(messages[-1].get("content", ""))
         elif self.completion_condition == "max_turns":
             # Never complete naturally (test max_turns)
             return False
         elif self.completion_condition == "error":
             # Complete on any error
+            assert isinstance(messages, list)
             if messages and messages[-1].get("role") == "assistant":
-                return messages[-1].get("content", "").startswith("[ERROR]")
+                assert isinstance(messages, list)
+                return str(messages[-1].get("content", "")).startswith("[ERROR]")
         return False
 
-    def env_response(self, messages, state, **kwargs):
+    async def env_response(self, messages, state, **kwargs) -> tuple[Messages, State]:
         """Simple environment response for testing."""
         self.env_response_count += 1
 
@@ -319,6 +337,66 @@ def mock_multiturn_env_max_turns(mock_openai_client, sample_chat_dataset):
         dataset=sample_chat_dataset,
         max_turns=2,
         completion_condition="max_turns",  # Never complete naturally
+        parser=Parser(),
+        rubric=Rubric(),
+    )
+
+
+def square_tool(x: int) -> int:
+    return x * x
+
+
+def faulty_tool() -> None:
+    raise ValueError("failure")
+
+
+class BasicToolEnv(ToolEnv):
+    def __init__(self, **kwargs):
+        super().__init__(tools=[square_tool], **kwargs)
+
+
+@pytest.fixture
+def mock_tool_env(mock_openai_client, sample_chat_dataset):
+    return BasicToolEnv(
+        client=mock_openai_client,
+        model="test-model",
+        dataset=sample_chat_dataset,
+        parser=Parser(),
+        rubric=Rubric(),
+    )
+
+
+def offset_tool(x: int, offset: int) -> int:
+    return x + offset
+
+
+def secret_tool(x: int, secret: int) -> int:
+    return x + secret
+
+
+class ExampleStatefulToolEnv(StatefulToolEnv):
+    def __init__(self, **kwargs):
+        super().__init__(tools=[offset_tool], **kwargs)
+
+    async def setup_state(self, state, **kwargs):
+        state = await super().setup_state(state, **kwargs)
+        state["offset"] = 3
+        state["update_calls"] = 0
+        return state
+
+    def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
+        state["update_calls"] += 1
+        updated_args = {**tool_args, "offset": state["offset"]}
+        state["last_tool_args"] = updated_args.copy()
+        return updated_args
+
+
+@pytest.fixture
+def mock_stateful_tool_env(mock_openai_client, sample_chat_dataset):
+    return ExampleStatefulToolEnv(
+        client=mock_openai_client,
+        model="test-model",
+        dataset=sample_chat_dataset,
         parser=Parser(),
         rubric=Rubric(),
     )

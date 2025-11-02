@@ -26,8 +26,8 @@ class TestSingleTurnEnv:
             rubric=Rubric(),
         )
         assert env.message_type == "chat"
-        assert env.client == mock_openai_client
-        assert env.model == "test-model"
+        assert isinstance(env.parser, Parser)
+        assert isinstance(env.rubric, Rubric)
 
     def test_singleturn_env_initialization_completion(self, mock_openai_client):
         """Test SingleTurnEnv initialization with completion format."""
@@ -209,8 +209,7 @@ class TestSingleTurnEnv:
 
         # Check all expected state fields
         assert state["prompt"] == prompt
-        # state["completion"] is initialized to [] but not updated during rollout
-        assert state["completion"] == []
+        assert state["completion"] == completion
         assert state["answer"] == answer
         assert state["task"] == task
         assert state["info"] == info
@@ -227,6 +226,7 @@ class TestSingleTurnEnv:
                 [{"role": "user", "content": "What is 3+3?"}],
             ],
             "answer": ["4", "6"],
+            "example_id": [0, 1],
         }
 
         # Mock the rubric.score_rollouts method
@@ -234,7 +234,12 @@ class TestSingleTurnEnv:
             return_value=RolloutScores(reward=[1.0, 1.0], metrics={})
         )
 
-        results = await mock_singleturn_env.a_generate(inputs)
+        results = await mock_singleturn_env.a_generate(
+            inputs,
+            client=mock_singleturn_env.client,
+            model="test-model",
+            interleave_scoring=False,
+        )
 
         assert hasattr(results, "completion")
         assert hasattr(results, "state")
@@ -253,7 +258,12 @@ class TestSingleTurnEnv:
             return_value=RolloutScores(reward=[1.0, 1.0], metrics={})
         )
 
-        results = await mock_singleturn_env.a_generate(sample_chat_dataset)
+        results = await mock_singleturn_env.a_generate(
+            sample_chat_dataset,
+            client=mock_singleturn_env.client,
+            model="test-model",
+            interleave_scoring=False,
+        )
 
         assert hasattr(results, "completion")
         assert hasattr(results, "state")
@@ -263,9 +273,18 @@ class TestSingleTurnEnv:
     @pytest.mark.asyncio
     async def test_a_generate_no_scoring(self, mock_singleturn_env):
         """Test async generation without scoring rollouts."""
-        inputs = {"prompt": [[{"role": "user", "content": "Hello"}]], "answer": ["Hi"]}
+        inputs = {
+            "prompt": [[{"role": "user", "content": "Hello"}]],
+            "answer": ["Hi"],
+            "example_id": [0],
+        }
 
-        results = await mock_singleturn_env.a_generate(inputs, score_rollouts=False)
+        results = await mock_singleturn_env.a_generate(
+            inputs,
+            client=mock_singleturn_env.client,
+            model="test-model",
+            score_rollouts=False,
+        )
 
         assert hasattr(results, "completion")
         assert hasattr(results, "state")
@@ -278,6 +297,7 @@ class TestSingleTurnEnv:
             "prompt": [[{"role": "user", "content": "Hello"}]],
             "answer": ["Hi"],
             "info": [{}],
+            "example_id": [0],
         }
 
         # Mock the rubric.score_rollouts method
@@ -285,8 +305,11 @@ class TestSingleTurnEnv:
             return_value=RolloutScores(reward=[1.0], metrics={})
         )
 
-        results = mock_singleturn_env.generate(
-            inputs, client=mock_singleturn_env.client
+        results = mock_singleturn_env.generate_sync(
+            inputs,
+            client=mock_singleturn_env.client,
+            model="test-model",
+            interleave_scoring=False,
         )
 
         assert hasattr(results, "completion")

@@ -11,6 +11,7 @@ class XMLParser(Parser):
         self,
         fields: list[str | tuple[str, ...]],
         answer_field: str = "answer",
+        extract_fn: Callable[[str], str] = lambda x: x,
     ):
         """
         Initialize the parser with field definitions.
@@ -23,6 +24,7 @@ class XMLParser(Parser):
 
         The schema is assumed to have no duplicate names.
         """
+        super().__init__(extract_fn=extract_fn)
         # list of (canonical, [alternatives])
         self._fields: list[tuple[str, list[str]]] = []
 
@@ -45,6 +47,12 @@ class XMLParser(Parser):
                 raise ValueError(f"Duplicate field name: {canonical}")
             seen.add(canonical)
             self._fields.append((canonical, alternatives))
+        if "think" in seen:
+            self.logger.warning(
+                "You have included the 'think' field in the XMLParser. This should only be used with models which always include <think>...</think> tags but do NOT parse them automatically. "
+                "This will cause parsing failures if the model does not include <think>...</think> tags, or if the chat template automatically removes <think>...</think> tags."
+                "In particular, you should NOT use this parser configuration with Qwen3 or DeepSeek-R1 models."
+            )
 
     def parse(self, text: str, strip: bool = True, last: bool = False) -> Any:
         """
@@ -69,7 +77,7 @@ class XMLParser(Parser):
                 if last:
                     match = None
                     for match in re.finditer(pattern, text, re.DOTALL):
-                        pass # iterate over matches to bind last match
+                        pass  # iterate over matches to bind last match
                 else:
                     match = re.search(pattern, text, re.DOTALL)
                 if match:
@@ -90,7 +98,9 @@ class XMLParser(Parser):
                 return getattr(parsed, self.answer_field)
         else:
             for msg in reversed(self.get_assistant_messages(completion)):
-                parsed = self.parse(msg["content"])
+                assert "content" in msg
+                content = str(msg["content"])
+                parsed = self.parse(content)
                 if (
                     parsed
                     and hasattr(parsed, self.answer_field)
@@ -131,7 +141,8 @@ class XMLParser(Parser):
             # Calculate format adherence for each message
             format_scores = []
             for msg in model_messages:
-                content = msg["content"]
+                assert "content" in msg
+                content = str(msg["content"])
                 parsed = self.parse(content)
                 parsed_no_strip = self.parse(content, strip=False)
 

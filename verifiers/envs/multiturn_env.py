@@ -1,3 +1,5 @@
+import logging
+import time
 from abc import abstractmethod
 
 from openai import AsyncOpenAI
@@ -14,18 +16,29 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 
+logger = logging.getLogger(__name__)
+
 
 class MultiTurnEnv(Environment):
     def __init__(self, max_turns: int = -1, **kwargs):
         super().__init__(**kwargs)
         self.max_turns = max_turns
 
+    async def prompt_too_long(self, state: State) -> bool:
+        return state.get("prompt_too_long", False)
+
+    async def max_turns_reached(self, state: State) -> bool:
+        """Check if the maximum number of turns has been reached."""
+        return state["turn"] >= self.max_turns and self.max_turns > 0
+
     async def setup_state(self, state: State, **kwargs) -> State:
         return state
 
-    @abstractmethod
     async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        pass
+        """When overriding, call self.max_turns_reached(state) to check if turn limit reached."""
+        max_turns_reached = await self.max_turns_reached(state)
+        prompt_too_long = await self.prompt_too_long(state)
+        return max_turns_reached or prompt_too_long
 
     @abstractmethod
     async def env_response(
@@ -36,95 +49,100 @@ class MultiTurnEnv(Environment):
         """
         pass
 
+    async def get_context_messages(self, state: State) -> Messages:
+        return state["prompt"] + state["completion"]
+
     async def rollout(
         self,
         client: AsyncOpenAI,
         model: str,
         prompt: Messages,
+        completion: Messages | None = None,
         answer: str = "",
+        state: State = {},
         task: str = "default",
         info: Info | None = None,
+        example_id: int = 0,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
     ) -> tuple[Messages, State]:
         """
         Generate a multi-turn rollout with the environment (messages, state).
         """
+        completion = completion or await self.init_completion()
         info = info or {}
         is_completed = False
-        state = {
-            "prompt": prompt,
-            "completion": [],
-            "answer": answer,
-            "task": task,
-            "info": info,
-            "responses": [],
-            "turn": 0,
-        }
+        state = state or await self.init_state(
+            prompt, completion, answer, task, info, example_id
+        )
+        start_time = time.time()
         state = await maybe_await(self.setup_state, state, **kwargs)
         if self.message_type == "chat":
-            assert isinstance(prompt, list)
-            completion = []
+            assert isinstance(state["prompt"], list)
+            assert isinstance(state["completion"], list)
         else:
-            assert isinstance(prompt, str)
-            completion = ""
+            assert isinstance(state["prompt"], str)
+            assert isinstance(state["completion"], str)
             state["responses_start_idx"] = []
-        rollout = list(prompt) if not isinstance(prompt, str) else prompt
         while not is_completed:
-            if await maybe_await(self.is_completed, rollout, state, **kwargs):
+            context_messages = await self.get_context_messages(state)
+            if await maybe_await(self.is_completed, context_messages, state, **kwargs):
                 is_completed = True
                 break
             response = await self.get_model_response(
-                client=client,
-                model=model,
-                prompt=rollout,
+                client,
+                model,
+                context_messages,
                 oai_tools=info.get("oai_tools", None),
                 sampling_args=sampling_args,
                 message_type=self.message_type,
+                initial_prompt=len(state["responses"]) == 0,
+                **kwargs,
             )
+            if response is not None and response.id == "overlong-prompt":
+                state["prompt_too_long"] = True
+                break
             state["responses"].append(response)
+            response_text: str = ""
             if self.message_type == "chat":
-                assert isinstance(rollout, list)
-                assert isinstance(completion, list)
+                assert isinstance(context_messages, list)
                 assert isinstance(response, ChatCompletion)
-                response_text: str = response.choices[0].message.content or ""  # type: ignore
+                if response.choices and response.choices[0].message:
+                    response_text = response.choices[0].message.content or ""
                 response_message: ChatMessage = {
                     "role": "assistant",
                     "content": response_text,
                 }
-                if response.choices[0].message.tool_calls:
+                if (
+                    response.choices
+                    and response.choices[0].message
+                    and response.choices[0].message.tool_calls
+                ):
                     response_message["tool_calls"] = response.choices[  # type: ignore
                         0
                     ].message.tool_calls
-                rollout.append(response_message)
-                completion.append(response_message)
+                state["completion"].append(response_message)
             else:
-                assert isinstance(rollout, str)
-                assert isinstance(completion, str)
                 assert isinstance(response, Completion)
                 state["responses_start_idx"].append(len(completion))
-                response_text: str = response.choices[0].text or ""  # type: ignore
-                rollout += response_text
-                completion += response_text
+                if response.choices and response.choices[0]:
+                    response_text = response.choices[0].text or ""
+                state["completion"] += response_text
+            context_messages = await self.get_context_messages(state)
             state["turn"] += 1
-            if await maybe_await(self.is_completed, rollout, state, **kwargs) or (
-                state["turn"] >= self.max_turns and self.max_turns > 0
-            ):
+            if await maybe_await(self.is_completed, context_messages, state, **kwargs):
                 is_completed = True
+                end_time = time.time()
+                state["timing"]["generation_ms"] = (end_time - start_time) * 1000
+                state["timing"]["total_ms"] = (end_time - start_time) * 1000
             else:
                 env_msgs, state = await maybe_await(
-                    self.env_response, rollout, state, **kwargs
+                    self.env_response, context_messages, state, **kwargs
                 )
                 if self.message_type == "chat":
                     assert isinstance(env_msgs, list)
-                    assert isinstance(rollout, list)
-                    assert isinstance(completion, list)
-                    rollout += env_msgs
-                    completion += env_msgs
+                    state["completion"] += env_msgs
                 else:
                     assert isinstance(env_msgs, str)
-                    assert isinstance(rollout, str)
-                    assert isinstance(completion, str)
-                    rollout += env_msgs
-                    completion += env_msgs
-        return completion, state
+                    state["completion"] += env_msgs
+        return state["completion"], state

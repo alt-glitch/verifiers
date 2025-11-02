@@ -1,7 +1,12 @@
 import json
 from typing import cast
 
-from verifiers.types import ChatMessage, Messages
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice
+from openai.types.completion import Completion
+from openai.types.completion_choice import CompletionChoice
+
+from verifiers.types import ChatMessage, Messages, MessageType, ModelResponse
 
 
 def message_to_printable(message: ChatMessage) -> ChatMessage:
@@ -40,7 +45,7 @@ def messages_to_printable(messages: Messages) -> Messages:
     """
     if isinstance(messages, str):
         return messages
-    return [message_to_printable(m) for m in messages]
+    return [message_to_printable(m) for m in messages or []]
 
 
 def cleanup_message(message: ChatMessage) -> ChatMessage:
@@ -74,7 +79,10 @@ def cleanup_message(message: ChatMessage) -> ChatMessage:
                 new_message["content"].append(new_c)
             elif str(c_dict.get("type", "")).startswith("input_audio"):
                 # Ensure input_audio content blocks only have the required fields
-                clean_c = {"type": "input_audio", "input_audio": c_dict.get("input_audio", {})}
+                clean_c = {
+                    "type": "input_audio",
+                    "input_audio": c_dict.get("input_audio", {}),
+                }
                 new_message["content"].append(clean_c)
             else:
                 new_message["content"].append(new_c)
@@ -111,3 +119,39 @@ def sanitize_tool_calls(messages: Messages):
         else:
             sanitized_messages.append(m)
     return sanitized_messages
+
+
+def get_overlong_prompt_dummy_response(message_type: MessageType) -> ModelResponse:
+    if message_type == "chat":
+        return ChatCompletion(
+            id="overlong-prompt",
+            created=0,
+            model="",
+            object="chat.completion",
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChatCompletionMessage(
+                        role="assistant",
+                        content="Prompt too long.",
+                    ),
+                    finish_reason="length",
+                )
+            ],
+        )
+    elif message_type == "completion":
+        return Completion(
+            id="overlong-prompt",
+            created=0,
+            model="",
+            object="text_completion",
+            choices=[
+                CompletionChoice(
+                    index=0,
+                    text="Prompt too long.",
+                    finish_reason="length",
+                )
+            ],
+        )
+    else:
+        raise ValueError(f"Invalid message type: {message_type}")

@@ -1,7 +1,9 @@
 """Tests for the tool_utils module."""
 
-from verifiers.utils.tool_utils import convert_func_to_oai_tool
 from typing import Optional
+
+from verifiers.utils.tool_utils import convert_func_to_oai_tool
+
 
 class TestToolUtils:
     """Test cases for the tool_utils module."""
@@ -33,14 +35,25 @@ class TestToolUtils:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "param1": {"type": "integer", "description": "This is test integer parameter.", "title": "Param1"},
-                        "param2": {"type": "string", "description": "This is test string parameter.", "title": "Param2"},
-                        "param3": {"type": "boolean", "description": "This is test boolean parameter.", "title": "Param3"},
+                        "param1": {
+                            "type": "integer",
+                            "description": "This is test integer parameter.",
+                            "title": "Param1",
+                        },
+                        "param2": {
+                            "type": "string",
+                            "description": "This is test string parameter.",
+                            "title": "Param2",
+                        },
+                        "param3": {
+                            "type": "boolean",
+                            "description": "This is test boolean parameter.",
+                            "title": "Param3",
+                        },
                     },
                     "required": ["param1", "param2", "param3"],
                     "title": "test_func_args",
                 },
-                "strict": True,
             },
         }
 
@@ -61,13 +74,20 @@ class TestToolUtils:
                     "additionalProperties": False,
                     "properties": {
                         "param1": {"type": "integer", "title": "Param1"},
-                        "param2": {"type": "string", "title": "Param2", "default": "test"},
-                        "param3": {"type": "boolean", "title": "Param3", "default": True},
+                        "param2": {
+                            "type": "string",
+                            "title": "Param2",
+                            "default": "test",
+                        },
+                        "param3": {
+                            "type": "boolean",
+                            "title": "Param3",
+                            "default": True,
+                        },
                     },
                     "required": ["param1", "param2", "param3"],
                     "title": "test_func_args",
                 },
-                "strict": True,
             },
         }
 
@@ -88,13 +108,16 @@ class TestToolUtils:
                     "properties": {
                         "param1": {"type": "integer", "title": "Param1"},
                         "param2": {"type": "string", "title": "Param2"},
-                        "param3": {"default": True, "title": "Param3", "anyOf": [{"type": "boolean"}, {"type": "null"}]},
+                        "param3": {
+                            "default": True,
+                            "title": "Param3",
+                            "anyOf": [{"type": "boolean"}, {"type": "null"}],
+                        },
                     },
                     "required": ["param1", "param2", "param3"],
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }
 
@@ -113,13 +136,16 @@ class TestToolUtils:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "param1": {"type": "array", "items": {"type": "integer"}, "title": "Param1"},
+                        "param1": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "title": "Param1",
+                        },
                     },
                     "required": ["param1"],
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }
 
@@ -145,6 +171,5 @@ class TestToolUtils:
                     "title": "test_func_args",
                     "additionalProperties": False,
                 },
-                "strict": True,
             },
         }

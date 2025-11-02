@@ -4,8 +4,8 @@ This folder contains installable example environments that showcase common usage
 
 ## Quick start
 
-- **Install an environment from this GitHub repo**: `vf-install vf-math-python --from-repo`
-- **Evaluate**: `vf-eval vf-math-python` (defaults to gpt-4.1-mini, small sample)
+- **Install an environment from this GitHub repo**: `vf-install math-python --from-repo`
+- **Evaluate**: `vf-eval math-python` (defaults to gpt-4.1-mini, small sample)
 
 ## Common usage patterns and examples
 
@@ -30,13 +30,16 @@ This folder contains installable example environments that showcase common usage
 ### Tool use
 - **ToolEnv (native function-calling)**
   - **tool_test**: Validates parallel tool calls and checks exact tool usage via `ToolRubric` + custom reward.
-  - **math_python**: Combines tool-use (`python` tool) with answer correctness using `RubricGroup` (`ToolRubric` + `MathRubric`).
   - **wiki_search**: Multi-tool retrieval (search/view/read) with `ToolEnv`; final judgment combined via `RubricGroup` with a `JudgeRubric`.
 
 - **XML tool calling (roll-your-own on MultiTurnEnv)**
   - **xml_tool_env**: Parses `<tool>{...}</tool>` commands with `XMLParser`, executes Python functions, and returns `<result>...</result>` via `env_response`.
   - **xlam_function_calling**: Single-turn XML tool-call verification (no execution) that checks called tools match the ground truth list.
   - **smolagents_math_tools**: Integrates Smolagents `Tool` objects and a custom parser for tool/answer XML; demonstrates external tool frameworks.
+
+### Sandboxes
+- **PythonEnv (ipython-style REPL)**
+  - **math_python**: Solve math problems using Python in a sandbox environment.
 
 ### Composition
 - **EnvGroup**
@@ -78,7 +81,7 @@ In-line usage:
 ```python
 import verifiers as vf
 from openai import AsyncOpenAI
-vf_env = vf.load_environment("vf-reverse-text")
+vf_env = vf.load_environment("reverse-text")
 results = vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_examples=25)
 ```
 
